@@ -1,0 +1,61 @@
+import pandas as pd
+
+def production_percentage(df, year):
+    # Filter the dataframe for the specified year
+    year_df = df[df['Year'] == year]
+
+    # Calculate the total production for each entity in the specified year
+    total_production = year_df.groupby('Entity')['Yams  Production (tonnes)'].sum()
+
+    # Calculate the percentage of each entity's production out of the total production
+    percentage = (total_production / total_production.sum()) * 100
+
+    # Sort the entities based on yams production percentage in descending order
+    sorted_entities = percentage.sort_values(ascending=False)
+
+    # Print the production percentage for each entity
+    print(f"Production percentage in {year}")
+    print('Frst five Rows:\n',sorted_entities.head(5))  # Print top 5 entities
+    print('---------------------------------------------------------------------')
+    print('Bottom five Rows:\n',sorted_entities.tail(5))  # Print bottom 5 entities
+    print('---------------------------------------------------------------------')
+
+    return sorted_entities
+
+# Call the function for 1961 and 2021
+sorted_entities_1961 = production_percentage(df, 1961)
+sorted_entities_2021 = production_percentage(df, 2021)
+
+# Calculate the difference in percentage between 1961 and 2021 for the maximum entities
+max_diff = sorted_entities_1961.head(5) - sorted_entities_2021.head(5)
+print('---------------------------------------------------------------------')
+# Print the difference in percentage for maximum entities between 1961 and 2021
+print("\nDifference in percentage for maximum entities between 1961 and 2021:")
+print(max_diff)
+print('---------------------------------------------------------------------')
+# Print the entities with maximum yams production percentage in 1961
+print("\nEntities with maximum yams production percentage in 1961")
+for entity, percentage in sorted_entities_1961.head(5).items():
+    print("Entity:", entity)
+    print("Percentage:", percentage)
+    
+print('---------------------------------------------------------------------')
+# Print the entities with maximum yams production percentage in 2021
+print("\nEntities with maximum yams production percentage in 2021")
+for entity, percentage in sorted_entities_2021.head(5).items():
+    print("Entity:", entity)
+    print("Percentage:", percentage)
+    
+print('---------------------------------------------------------------------')
+# Print the entities with minimum yams production percentage in 1961
+print("\nEntities with minimum yams production percentage in 1961")
+for entity, percentage in sorted_entities_1961.tail(5).items():
+    print("Entity:", entity)
+    print("Percentage:", percentage)
+    
+print('---------------------------------------------------------------------')
+# Print the entities with minimum yams production percentage in 2021
+print("\nEntities with minimum yams production percentage in 2021")
+for entity, percentage in sorted_entities_2021.tail(5).items():
+    print("Entity:", entity)
+    print("Percentage:", percentage)
