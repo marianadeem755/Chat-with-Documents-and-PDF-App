@@ -8,12 +8,30 @@ import time
 from typing import List, Dict
 import hashlib
 
-# Initialize Groq client (you'll need to set this up in Streamlit Cloud secrets)
+# Load environment variables from .env file if it exists
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    # python-dotenv not installed, skip loading .env file
+    pass
+
+# Initialize Groq client with environment variable
 @st.cache_resource
 def get_groq_client():
-    # Use your Groq API key here - store it in Streamlit secrets
-    api_key = st.secrets.get("GROQ_API_KEY", "your_groq_api_key_here")
-    return Groq(api_key=api_key)
+    # Try to get API key from environment variables first, then from Streamlit secrets
+    api_key = os.getenv("GROQ_API_KEY") or st.secrets.get("GROQ_API_KEY")
+    
+    if not api_key:
+        st.error("❌ GROQ_API_KEY not found in environment variables or Streamlit secrets!")
+        st.info("Please set the GROQ_API_KEY environment variable or add it to your Streamlit secrets.")
+        st.stop()
+    
+    try:
+        return Groq(api_key=api_key)
+    except Exception as e:
+        st.error(f"❌ Failed to initialize Groq client: {str(e)}")
+        st.stop()
 
 # Document processing functions
 def extract_text_from_pdf(uploaded_file):
@@ -31,15 +49,16 @@ def extract_text_from_pdf(uploaded_file):
 def extract_text_from_docx(uploaded_file):
     """Extract text from uploaded DOCX file"""
     try:
-        # Save uploaded file temporarily
-        with open("temp.docx", "wb") as f:
+        # Create a temporary file
+        temp_file = f"temp_{hashlib.md5(uploaded_file.name.encode()).hexdigest()}.docx"
+        with open(temp_file, "wb") as f:
             f.write(uploaded_file.getbuffer())
         
-        text = docx2txt.process("temp.docx")
+        text = docx2txt.process(temp_file)
         
         # Clean up temp file
-        if os.path.exists("temp.docx"):
-            os.remove("temp.docx")
+        if os.path.exists(temp_file):
+            os.remove(temp_file)
             
         return text
     except Exception as e:
@@ -210,11 +229,7 @@ def main():
     """, unsafe_allow_html=True)
 
     # Initialize Groq client
-    try:
-        groq_client = get_groq_client()
-    except Exception as e:
-        st.error("Failed to initialize AI service. Please check configuration.")
-        return
+    groq_client = get_groq_client()
 
     # Sidebar
     with st.sidebar:
@@ -229,6 +244,17 @@ def main():
         
         st.markdown("---")
         
+        # API Key Status
+        st.header("🔑 API Status")
+        if os.getenv("GROQ_API_KEY"):
+            st.success("✅ API Key loaded from environment")
+        elif st.secrets.get("GROQ_API_KEY"):
+            st.success("✅ API Key loaded from secrets")
+        else:
+            st.error("❌ No API Key found")
+        
+        st.markdown("---")
+        
         # Features
         st.header("✨ Features")
         st.markdown("""
@@ -239,6 +265,58 @@ def main():
         - 🎨 **Professional UI**: Modern interface
         - ⚡ **Fast Processing**: Optimized performance
         """)
+        
+        st.markdown("---")
+        
+        # Setup Instructions
+        st.header("⚙️ Setup")
+        with st.expander("Environment Variable Setup"):
+            st.markdown("""
+            **Option 1: Environment Variables**
+            ```bash
+            export GROQ_API_KEY="your_api_key_here"
+            ```
+            
+            **Option 2: .env File**
+            Create a `.env` file in your project root:
+            ```
+            GROQ_API_KEY=your_api_key_here
+            ```
+            Then install python-dotenv:
+            ```bash
+            pip install python-dotenv
+            ```
+            
+            **Option 3: Streamlit Cloud Secrets**
+            Add `GROQ_API_KEY` to your app's secrets in the Streamlit Cloud dashboard.
+            
+            **Requirements.txt should include:**
+            ```
+            streamlit
+            groq
+            PyPDF2
+            docx2txt
+            python-dotenv  # Optional for .env file support
+            ```
+            """)
+        
+        # Dependencies Info
+        with st.expander("📦 Dependencies"):
+            st.markdown("""
+            **Required packages:**
+            - `streamlit`
+            - `groq`
+            - `PyPDF2`
+            - `docx2txt`
+            
+            **Optional:**
+            - `python-dotenv` (for .env file support)
+            
+            **Install command:**
+            ```bash
+            pip install streamlit groq PyPDF2 docx2txt python-dotenv
+            ```
+            """)
         
         st.markdown("---")
         
