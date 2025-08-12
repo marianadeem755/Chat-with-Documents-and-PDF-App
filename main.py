@@ -265,59 +265,6 @@ def main():
         - 🎨 **Professional UI**: Modern interface
         - ⚡ **Fast Processing**: Optimized performance
         """)
-        
-        st.markdown("---")
-        
-        # Setup Instructions
-        st.header("⚙️ Setup")
-        with st.expander("Environment Variable Setup"):
-            st.markdown("""
-            **Option 1: Environment Variables**
-            ```bash
-            export GROQ_API_KEY="your_api_key_here"
-            ```
-            
-            **Option 2: .env File**
-            Create a `.env` file in your project root:
-            ```
-            GROQ_API_KEY=your_api_key_here
-            ```
-            Then install python-dotenv:
-            ```bash
-            pip install python-dotenv
-            ```
-            
-            **Option 3: Streamlit Cloud Secrets**
-            Add `GROQ_API_KEY` to your app's secrets in the Streamlit Cloud dashboard.
-            
-            **Requirements.txt should include:**
-            ```
-            streamlit
-            groq
-            PyPDF2
-            docx2txt
-            python-dotenv  # Optional for .env file support
-            ```
-            """)
-        
-        # Dependencies Info
-        with st.expander("📦 Dependencies"):
-            st.markdown("""
-            **Required packages:**
-            - `streamlit`
-            - `groq`
-            - `PyPDF2`
-            - `docx2txt`
-            
-            **Optional:**
-            - `python-dotenv` (for .env file support)
-            
-            **Install command:**
-            ```bash
-            pip install streamlit groq PyPDF2 docx2txt python-dotenv
-            ```
-            """)
-        
         st.markdown("---")
         
         # About
@@ -432,4 +379,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
