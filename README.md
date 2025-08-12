@@ -100,10 +100,3 @@ pip install -r requirements.txt
 ## Acknowledgments
 
 - [Streamlit](https://streamlit.io/) for the web application framework.
-- [ ] Chat history
-- [ ] Document comparison
-- [ ] Export functionality
-
----
-
-*Made with ❤️ by Maria Nadeem*
