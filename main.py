@@ -135,7 +135,7 @@ Question: {question}
 Please provide a detailed answer based only on the information provided in the document. If the answer cannot be found in the document, please state that clearly."""
 
         response = _groq_client.chat.completions.create(
-            model="mixtral-8x7b-32768",  # or "llama2-70b-4096"
+            model="llama-3.3-70b-versatile",
             messages=[
                 {
                     "role": "system",
@@ -432,3 +432,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
