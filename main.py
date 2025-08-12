@@ -1,542 +1,356 @@
 import streamlit as st
-import os
 import PyPDF2
 import docx2txt
-import pandas as pd
-from pathlib import Path
-import tempfile
-from datetime import datetime
-import re
-import json
-from typing import List, Dict, Optional
+import io
+import os
+from groq import Groq
+import time
+from typing import List, Dict
 import hashlib
 
-# Removed OpenAI dependency - using local processing instead
+# Initialize Groq client (you'll need to set this up in Streamlit Cloud secrets)
+@st.cache_resource
+def get_groq_client():
+    # Use your Groq API key here - store it in Streamlit secrets
+    api_key = st.secrets.get("GROQ_API_KEY", "your_groq_api_key_here")
+    return Groq(api_key=api_key)
 
-class DocumentProcessor:
-    """Enhanced document processing with better text extraction and chunking"""
-    
-    @staticmethod
-    def extract_text_from_pdf(pdf_path: str) -> str:
-        """Extract text from PDF with better error handling"""
-        try:
-            with open(pdf_path, 'rb') as pdf_file:
-                pdf_reader = PyPDF2.PdfReader(pdf_file)
-                text_parts = []
-                
-                for page_num, page in enumerate(pdf_reader.pages, 1):
-                    try:
-                        page_text = page.extract_text()
-                        if page_text.strip():
-                            text_parts.append(f"\n--- Page {page_num} ---\n{page_text}")
-                    except Exception as e:
-                        st.warning(f"Error reading page {page_num}: {str(e)}")
-                        continue
-                
-                return "\n".join(text_parts)
-        except Exception as e:
-            st.error(f"Error processing PDF: {str(e)}")
-            return ""
-
-    @staticmethod
-    def extract_text_from_docx(docx_path: str) -> str:
-        """Extract text from DOCX with better formatting"""
-        try:
-            text = docx2txt.process(docx_path)
-            return text if text else "No readable content found in document."
-        except Exception as e:
-            st.error(f"Error processing DOCX: {str(e)}")
-            return ""
-
-    @staticmethod
-    def extract_text_from_txt(txt_path: str) -> str:
-        """Extract text from TXT files with encoding detection"""
-        try:
-            # Try different encodings
-            encodings = ['utf-8', 'utf-16', 'latin-1', 'cp1252']
-            
-            for encoding in encodings:
-                try:
-                    with open(txt_path, 'r', encoding=encoding) as file:
-                        return file.read()
-                except UnicodeDecodeError:
-                    continue
-            
-            # If all encodings fail, read as binary and decode with errors='ignore'
-            with open(txt_path, 'rb') as file:
-                return file.read().decode('utf-8', errors='ignore')
-        except Exception as e:
-            st.error(f"Error processing TXT: {str(e)}")
-            return ""
-
-    @staticmethod
-    def chunk_text(text: str, chunk_size: int = 1000, overlap: int = 200) -> List[str]:
-        """Split text into overlapping chunks for better context preservation"""
-        if not text:
-            return []
-        
-        words = text.split()
-        chunks = []
-        
-        for i in range(0, len(words), chunk_size - overlap):
-            chunk = " ".join(words[i:i + chunk_size])
-            if chunk.strip():
-                chunks.append(chunk)
-        
-        return chunks
-
-class SimpleRAG:
-    """Simple RAG implementation without external APIs"""
-    
-    def __init__(self):
-        self.documents = {}
-        self.processed_chunks = {}
-    
-    def add_document(self, doc_name: str, content: str):
-        """Add a document to the knowledge base"""
-        self.documents[doc_name] = content
-        self.processed_chunks[doc_name] = DocumentProcessor.chunk_text(content)
-    
-    def simple_search(self, query: str, top_k: int = 3) -> List[Dict]:
-        """Simple keyword-based search through documents"""
-        query_words = set(query.lower().split())
-        results = []
-        
-        for doc_name, chunks in self.processed_chunks.items():
-            for i, chunk in enumerate(chunks):
-                chunk_words = set(chunk.lower().split())
-                # Calculate simple overlap score
-                overlap = len(query_words.intersection(chunk_words))
-                if overlap > 0:
-                    results.append({
-                        'document': doc_name,
-                        'chunk_id': i,
-                        'content': chunk,
-                        'score': overlap / len(query_words)
-                    })
-        
-        # Sort by score and return top results
-        results.sort(key=lambda x: x['score'], reverse=True)
-        return results[:top_k]
-    
-    def generate_answer(self, query: str, context_chunks: List[Dict]) -> str:
-        """Generate answer based on retrieved context (simple rule-based approach)"""
-        if not context_chunks:
-            return "I couldn't find relevant information in the documents to answer your question."
-        
-        # Combine context
-        context = "\n\n".join([chunk['content'] for chunk in context_chunks])
-        
-        # Simple answer generation (in a real RAG, this would use LLM)
-        answer_parts = [
-            f"Based on the documents, here's what I found:\n",
-            f"Context from {len(context_chunks)} relevant sections:\n"
-        ]
-        
-        for i, chunk in enumerate(context_chunks, 1):
-            preview = chunk['content'][:200] + "..." if len(chunk['content']) > 200 else chunk['content']
-            answer_parts.append(f"\n{i}. From {chunk['document']}:\n{preview}")
-        
-        answer_parts.append(f"\n\nNote: This is a simple keyword-based search. For better results, consider using an AI model.")
-        
-        return "\n".join(answer_parts)
-
-def get_supported_file_types():
-    """Return supported file types"""
-    return {
-        'PDF': ['.pdf'],
-        'Word Document': ['.docx', '.doc'],
-        'Text File': ['.txt', '.md']
-    }
-
-def scan_directory(directory_path: str) -> Dict[str, List[str]]:
-    """Scan directory for supported documents"""
-    supported_extensions = {'.pdf', '.docx', '.doc', '.txt', '.md'}
-    found_files = {'pdf': [], 'docx': [], 'txt': []}
-    
+# Document processing functions
+def extract_text_from_pdf(uploaded_file):
+    """Extract text from uploaded PDF file"""
     try:
-        for root, dirs, files in os.walk(directory_path):
-            for file in files:
-                file_path = os.path.join(root, file)
-                file_ext = Path(file).suffix.lower()
-                
-                if file_ext == '.pdf':
-                    found_files['pdf'].append(file_path)
-                elif file_ext in ['.docx', '.doc']:
-                    found_files['docx'].append(file_path)
-                elif file_ext in ['.txt', '.md']:
-                    found_files['txt'].append(file_path)
-    
+        pdf_reader = PyPDF2.PdfReader(uploaded_file)
+        text = ""
+        for page in pdf_reader.pages:
+            text += page.extract_text() + "\n"
+        return text
     except Exception as e:
-        st.error(f"Error scanning directory: {str(e)}")
-    
-    return found_files
+        st.error(f"Error reading PDF: {str(e)}")
+        return ""
 
-def create_download_link(content: str, filename: str):
-    """Create a download link for content"""
-    import base64
-    b64 = base64.b64encode(content.encode()).decode()
-    return f'<a href="data:file/txt;base64,{b64}" download="{filename}">Download {filename}</a>'
+def extract_text_from_docx(uploaded_file):
+    """Extract text from uploaded DOCX file"""
+    try:
+        # Save uploaded file temporarily
+        with open("temp.docx", "wb") as f:
+            f.write(uploaded_file.getbuffer())
+        
+        text = docx2txt.process("temp.docx")
+        
+        # Clean up temp file
+        if os.path.exists("temp.docx"):
+            os.remove("temp.docx")
+            
+        return text
+    except Exception as e:
+        st.error(f"Error reading DOCX: {str(e)}")
+        return ""
+
+def extract_text_from_txt(uploaded_file):
+    """Extract text from uploaded TXT file"""
+    try:
+        # Convert bytes to string
+        text = str(uploaded_file.read(), "utf-8")
+        return text
+    except Exception as e:
+        st.error(f"Error reading TXT: {str(e)}")
+        return ""
+
+def process_documents(uploaded_files):
+    """Process multiple uploaded documents"""
+    all_texts = []
+    file_info = []
+    
+    for uploaded_file in uploaded_files:
+        file_extension = uploaded_file.name.split('.')[-1].lower()
+        
+        if file_extension == 'pdf':
+            text = extract_text_from_pdf(uploaded_file)
+        elif file_extension == 'docx':
+            text = extract_text_from_docx(uploaded_file)
+        elif file_extension == 'txt':
+            text = extract_text_from_txt(uploaded_file)
+        else:
+            st.warning(f"Unsupported file type: {uploaded_file.name}")
+            continue
+            
+        if text.strip():
+            all_texts.append(text)
+            file_info.append({
+                'name': uploaded_file.name,
+                'size': uploaded_file.size,
+                'type': file_extension,
+                'word_count': len(text.split())
+            })
+    
+    return all_texts, file_info
+
+def chunk_text(text, chunk_size=3000, overlap=200):
+    """Split text into overlapping chunks for better context"""
+    words = text.split()
+    chunks = []
+    
+    for i in range(0, len(words), chunk_size - overlap):
+        chunk = ' '.join(words[i:i + chunk_size])
+        chunks.append(chunk)
+        
+        if i + chunk_size >= len(words):
+            break
+    
+    return chunks
+
+@st.cache_data
+def get_answer_from_groq(text_chunks, question, _groq_client):
+    """Get answer using Groq API with context from document chunks"""
+    try:
+        # Combine relevant chunks (first few for context)
+        context = "\n".join(text_chunks[:3])  # Use first 3 chunks for context
+        
+        prompt = f"""Based on the following document content, please answer the question accurately and concisely.
+
+Document Content:
+{context}
+
+Question: {question}
+
+Please provide a detailed answer based only on the information provided in the document. If the answer cannot be found in the document, please state that clearly."""
+
+        response = _groq_client.chat.completions.create(
+            model="mixtral-8x7b-32768",  # or "llama2-70b-4096"
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are a helpful assistant that answers questions based on provided documents. Be accurate and cite specific information when possible."
+                },
+                {
+                    "role": "user", 
+                    "content": prompt
+                }
+            ],
+            temperature=0.1,
+            max_tokens=1000,
+        )
+        
+        return response.choices[0].message.content
+        
+    except Exception as e:
+        return f"Error generating answer: {str(e)}"
 
 def main():
     # Page configuration
     st.set_page_config(
-        page_title="Professional Document RAG Assistant",
-        page_icon="🤖",
+        page_title="Professional Document Chat Assistant",
+        page_icon="📚",
         layout="wide",
         initial_sidebar_state="expanded",
+        menu_items={
+            'Get Help': 'https://github.com/yourusername/document-chat',
+            'Report a bug': 'https://github.com/yourusername/document-chat/issues',
+            'About': 'Professional Document Chat Assistant powered by Groq AI'
+        }
     )
 
     # Custom CSS for professional styling
     st.markdown("""
     <style>
-        .main-header {
-            text-align: center;
-            color: #2E86AB;
-            font-size: 2.5em;
-            font-weight: bold;
-            margin-bottom: 0.5em;
-            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
-        }
-        .sub-header {
-            text-align: center;
-            color: #A23B72;
-            font-size: 1.2em;
-            margin-bottom: 2em;
-        }
         .stApp {
             background: url("https://images.unsplash.com/photo-1618820830674-35aa0e70dbfc?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=MnwxfDB8MXxyYW5kb218MHx8fHx8fHx8MTcwOTA0NDk4MA&ixlib=rb-4.0.3&q=80&utm_campaign=api-credit&utm_medium=referral&utm_source=unsplash_source&w=1080");
             background-size: cover;
             background-attachment: fixed;
         }
-        .content-box {
+        
+        .main-header {
             background: rgba(255, 255, 255, 0.95);
-            padding: 20px;
+            padding: 2rem;
             border-radius: 10px;
-            margin: 10px 0;
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            margin-bottom: 2rem;
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.2);
         }
-        .metric-card {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            padding: 15px;
+        
+        .chat-container {
+            background: rgba(255, 255, 255, 0.95);
+            padding: 1.5rem;
+            border-radius: 10px;
+            margin: 1rem 0;
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+        
+        .file-info {
+            background: rgba(245, 245, 245, 0.9);
+            padding: 1rem;
             border-radius: 8px;
-            margin: 5px;
+            margin: 0.5rem 0;
         }
-        .document-preview {
-            max-height: 300px;
-            overflow-y: auto;
-            background: #f8f9fa;
-            padding: 15px;
-            border-radius: 5px;
-            border-left: 4px solid #2E86AB;
-        }
+        
         .answer-box {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            padding: 20px;
+            background: rgba(240, 248, 255, 0.95);
+            padding: 1.5rem;
             border-radius: 10px;
-            margin: 10px 0;
+            border-left: 4px solid #4CAF50;
+            margin: 1rem 0;
+        }
+        
+        .stats-container {
+            background: rgba(255, 255, 255, 0.9);
+            padding: 1rem;
+            border-radius: 8px;
+            text-align: center;
         }
     </style>
     """, unsafe_allow_html=True)
 
     # Header
-    st.markdown('<h1 class="main-header">🤖 Professional Document RAG Assistant</h1>', unsafe_allow_html=True)
-    st.markdown('<p class="sub-header">Intelligent Document Analysis & Question Answering System</p>', unsafe_allow_html=True)
+    st.markdown("""
+    <div class="main-header">
+        <h1>📚 Professional Document Chat Assistant</h1>
+        <p>Upload your documents and ask questions - powered by advanced AI</p>
+    </div>
+    """, unsafe_allow_html=True)
 
-    # Initialize session state
-    if 'rag_system' not in st.session_state:
-        st.session_state.rag_system = SimpleRAG()
-    if 'processed_docs' not in st.session_state:
-        st.session_state.processed_docs = set()
-    if 'chat_history' not in st.session_state:
-        st.session_state.chat_history = []
+    # Initialize Groq client
+    try:
+        groq_client = get_groq_client()
+    except Exception as e:
+        st.error("Failed to initialize AI service. Please check configuration.")
+        return
 
     # Sidebar
     with st.sidebar:
-        st.markdown("### 📁 Document Management")
+        st.header("📁 Document Upload")
         
-        # Method selection
-        input_method = st.radio(
-            "Choose input method:",
-            ["📂 Browse Directory", "📎 Upload Files"],
-            key="input_method"
+        uploaded_files = st.file_uploader(
+            "Choose your documents",
+            type=['pdf', 'docx', 'txt'],
+            accept_multiple_files=True,
+            help="Upload PDF, DOCX, or TXT files to chat with"
         )
         
-        st.markdown("### 📊 Statistics")
-        total_docs = len(st.session_state.processed_docs)
-        st.metric("Documents Processed", total_docs)
-        st.metric("Chat History", len(st.session_state.chat_history))
+        st.markdown("---")
         
-        # Supported formats
-        st.markdown("### 📋 Supported Formats")
-        formats = get_supported_file_types()
-        for format_name, extensions in formats.items():
-            st.write(f"• {format_name}: {', '.join(extensions)}")
+        # Features
+        st.header("✨ Features")
+        st.markdown("""
+        - 📄 **Multi-format Support**: PDF, DOCX, TXT
+        - 🤖 **AI-Powered**: Advanced language model
+        - 🔍 **Smart Search**: Context-aware answers
+        - 📊 **Document Analytics**: File statistics
+        - 🎨 **Professional UI**: Modern interface
+        - ⚡ **Fast Processing**: Optimized performance
+        """)
         
-        # Clear data button
-        if st.button("🗑️ Clear All Data", type="secondary"):
-            st.session_state.rag_system = SimpleRAG()
-            st.session_state.processed_docs = set()
-            st.session_state.chat_history = []
-            st.success("All data cleared!")
+        st.markdown("---")
+        
+        # About
+        st.header("👨‍💻 About")
+        st.markdown("""
+        **Developed by:** Maria Nadeem  
+        **GitHub:** [marianadeem755](https://github.com/marianadeem755)  
+        **LinkedIn:** [Maria Nadeem](https://www.linkedin.com/in/maria-nadeem-4994122aa/)  
+        **Email:** [marianadeem755@gmail.com](mailto:marianadeem755@gmail.com)
+        """)
 
     # Main content area
-    col1, col2 = st.columns([1, 1])
-
+    col1, col2 = st.columns([2, 1])
+    
     with col1:
-        st.markdown('<div class="content-box">', unsafe_allow_html=True)
-        st.markdown("### 📂 Document Input")
-        
-        if input_method == "📂 Browse Directory":
-            directory_path = st.text_input(
-                "📁 Enter directory path:",
-                placeholder="e.g., C:/Documents or /home/user/documents",
-                help="Enter the full path to the directory containing your documents"
-            )
-            
-            if directory_path and os.path.exists(directory_path):
-                found_files = scan_directory(directory_path)
-                total_files = sum(len(files) for files in found_files.values())
-                
-                if total_files > 0:
-                    st.success(f"Found {total_files} supported files!")
-                    
-                    # Display file counts
-                    col_pdf, col_docx, col_txt = st.columns(3)
-                    with col_pdf:
-                        st.metric("PDFs", len(found_files['pdf']))
-                    with col_docx:
-                        st.metric("Word Docs", len(found_files['docx']))
-                    with col_txt:
-                        st.metric("Text Files", len(found_files['txt']))
-                    
-                    # File selection
-                    all_files = []
-                    for file_type, file_list in found_files.items():
-                        all_files.extend([(f, file_type) for f in file_list])
-                    
-                    if all_files:
-                        selected_files = st.multiselect(
-                            "Select files to process:",
-                            options=[f[0] for f in all_files],
-                            format_func=lambda x: os.path.basename(x),
-                            default=[f[0] for f in all_files[:3]]  # Select first 3 by default
-                        )
-                        
-                        if st.button("🔄 Process Selected Files", type="primary"):
-                            process_files(selected_files)
-                else:
-                    st.warning("No supported files found in the specified directory.")
-            elif directory_path:
-                st.error("Directory does not exist. Please check the path.")
-        
-        else:  # Upload files
-            uploaded_files = st.file_uploader(
-                "📎 Upload documents:",
-                type=['pdf', 'docx', 'doc', 'txt', 'md'],
-                accept_multiple_files=True,
-                help="Upload PDF, Word, or Text documents"
-            )
-            
-            if uploaded_files:
-                st.success(f"Uploaded {len(uploaded_files)} files!")
-                
-                if st.button("🔄 Process Uploaded Files", type="primary"):
-                    process_uploaded_files(uploaded_files)
-        
-        st.markdown('</div>', unsafe_allow_html=True)
-
-    with col2:
-        st.markdown('<div class="content-box">', unsafe_allow_html=True)
-        st.markdown("### 💬 Document Chat")
-        
-        if st.session_state.processed_docs:
-            # Display processed documents
-            with st.expander("📚 Processed Documents", expanded=False):
-                for doc_name in st.session_state.processed_docs:
-                    st.write(f"• {doc_name}")
-            
-            # Question input
-            question = st.text_input(
-                "❓ Ask a question about your documents:",
-                placeholder="e.g., What is the main topic discussed in these documents?",
-                key="question_input"
-            )
-            
-            # Search parameters
-            with st.expander("🔧 Search Settings", expanded=False):
-                top_k = st.slider("Number of relevant chunks to retrieve:", 1, 10, 3)
-                show_sources = st.checkbox("Show source information", value=True)
-            
-            if question:
-                with st.spinner("🔍 Searching documents..."):
-                    # Perform RAG search
-                    relevant_chunks = st.session_state.rag_system.simple_search(question, top_k=top_k)
-                    answer = st.session_state.rag_system.generate_answer(question, relevant_chunks)
-                
-                # Display answer
-                st.markdown('<div class="answer-box">', unsafe_allow_html=True)
-                st.markdown("### 🎯 Answer")
-                st.write(answer)
-                st.markdown('</div>', unsafe_allow_html=True)
-                
-                # Show sources if enabled
-                if show_sources and relevant_chunks:
-                    with st.expander("📖 Source Information", expanded=True):
-                        for i, chunk in enumerate(relevant_chunks, 1):
-                            st.write(f"**Source {i}:** {chunk['document']}")
-                            st.write(f"**Relevance Score:** {chunk['score']:.2f}")
-                            st.write(f"**Content Preview:** {chunk['content'][:200]}...")
-                            st.write("---")
-                
-                # Add to chat history
-                st.session_state.chat_history.append({
-                    'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    'question': question,
-                    'answer': answer,
-                    'sources': len(relevant_chunks)
-                })
-                
-                # Download answer
-                if st.button("💾 Save Answer"):
-                    filename = f"answer_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
-                    content = f"Question: {question}\n\nAnswer: {answer}\n\nGenerated on: {datetime.now()}"
-                    st.download_button(
-                        label="Download Answer",
-                        data=content,
-                        file_name=filename,
-                        mime="text/plain"
-                    )
-        
+        if not uploaded_files:
+            st.markdown("""
+            <div class="chat-container">
+                <h3>🚀 Get Started</h3>
+                <ol>
+                    <li>Upload your documents using the sidebar</li>
+                    <li>Wait for processing to complete</li>
+                    <li>Ask questions about your documents</li>
+                    <li>Get intelligent, context-aware answers</li>
+                </ol>
+            </div>
+            """, unsafe_allow_html=True)
         else:
-            st.info("👆 Please process some documents first to start chatting!")
-        
-        st.markdown('</div>', unsafe_allow_html=True)
-
-    # Chat History Section
-    if st.session_state.chat_history:
-        st.markdown('<div class="content-box">', unsafe_allow_html=True)
-        st.markdown("### 📜 Chat History")
-        
-        # Display recent chats
-        for i, chat in enumerate(reversed(st.session_state.chat_history[-5:]), 1):
-            with st.expander(f"Chat {len(st.session_state.chat_history) - i + 1}: {chat['question'][:50]}...", expanded=False):
-                st.write(f"**Time:** {chat['timestamp']}")
-                st.write(f"**Question:** {chat['question']}")
-                st.write(f"**Answer:** {chat['answer'][:200]}...")
-                st.write(f"**Sources Used:** {chat['sources']}")
-        
-        # Export chat history
-        if st.button("📤 Export Chat History"):
-            chat_data = []
-            for chat in st.session_state.chat_history:
-                chat_data.append({
-                    'Timestamp': chat['timestamp'],
-                    'Question': chat['question'],
-                    'Answer': chat['answer'],
-                    'Sources': chat['sources']
-                })
+            # Process documents
+            with st.spinner("🔄 Processing documents..."):
+                all_texts, file_info = process_documents(uploaded_files)
             
-            df = pd.DataFrame(chat_data)
-            csv = df.to_csv(index=False)
-            st.download_button(
-                label="Download Chat History (CSV)",
-                data=csv,
-                file_name=f"chat_history_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                mime="text/csv"
-            )
-        
-        st.markdown('</div>', unsafe_allow_html=True)
-
-    # Footer
-    st.markdown("---")
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        st.markdown("### 👩‍💻 Developer")
-        st.markdown("**Maria Nadeem**")
-        st.markdown("[GitHub](https://github.com/marianadeem755) | [LinkedIn](https://www.linkedin.com/in/maria-nadeem-4994122aa/)")
+            if all_texts:
+                st.success(f"✅ Successfully processed {len(file_info)} documents")
+                
+                # Combine all texts and create chunks
+                combined_text = "\n\n".join(all_texts)
+                text_chunks = chunk_text(combined_text)
+                
+                # Chat interface
+                st.markdown("""
+                <div class="chat-container">
+                    <h3>💬 Ask Questions About Your Documents</h3>
+                </div>
+                """, unsafe_allow_html=True)
+                
+                question = st.text_input(
+                    "Enter your question:",
+                    placeholder="What is the main topic of these documents?",
+                    help="Ask any question about the content of your uploaded documents"
+                )
+                
+                col_ask, col_clear = st.columns([1, 4])
+                with col_ask:
+                    ask_button = st.button("🔍 Ask Question", type="primary")
+                
+                if question and ask_button:
+                    with st.spinner("🤔 Thinking..."):
+                        answer = get_answer_from_groq(text_chunks, question, groq_client)
+                    
+                    st.markdown(f"""
+                    <div class="answer-box">
+                        <h4>💡 Answer:</h4>
+                        <p>{answer}</p>
+                    </div>
+                    """, unsafe_allow_html=True)
+                    
+                    # Copy button
+                    if st.button("📋 Copy Answer"):
+                        st.code(answer)
+                        st.success("Answer ready to copy!")
+                
+                # Document preview
+                with st.expander("📖 Document Preview"):
+                    preview_text = combined_text[:1000] + "..." if len(combined_text) > 1000 else combined_text
+                    st.text_area("Content Preview:", preview_text, height=200)
+            
+            else:
+                st.error("❌ No text could be extracted from the uploaded files.")
     
     with col2:
-        st.markdown("### 🚀 Features")
-        st.markdown("• Multi-format support")
-        st.markdown("• Smart text chunking")
-        st.markdown("• Chat history")
-        st.markdown("• Export capabilities")
-    
-    with col3:
-        st.markdown("### 📧 Contact")
-        st.markdown("[marianadeem755@gmail.com](mailto:marianadeem755@gmail.com)")
-        st.markdown("Built with ❤️ using Streamlit")
-
-def process_files(file_paths):
-    """Process selected files from directory"""
-    processor = DocumentProcessor()
-    progress_bar = st.progress(0)
-    
-    for i, file_path in enumerate(file_paths):
-        try:
-            file_name = os.path.basename(file_path)
+        if uploaded_files and file_info:
+            st.markdown("""
+            <div class="stats-container">
+                <h3>📊 Document Stats</h3>
+            </div>
+            """, unsafe_allow_html=True)
             
-            if file_path.lower().endswith('.pdf'):
-                content = processor.extract_text_from_pdf(file_path)
-            elif file_path.lower().endswith(('.docx', '.doc')):
-                content = processor.extract_text_from_docx(file_path)
-            elif file_path.lower().endswith(('.txt', '.md')):
-                content = processor.extract_text_from_txt(file_path)
-            else:
-                continue
+            # File statistics
+            for info in file_info:
+                st.markdown(f"""
+                <div class="file-info">
+                    <strong>📄 {info['name']}</strong><br>
+                    <small>Type: {info['type'].upper()}</small><br>
+                    <small>Size: {info['size']:,} bytes</small><br>
+                    <small>Words: {info['word_count']:,}</small>
+                </div>
+                """, unsafe_allow_html=True)
             
-            if content.strip():
-                st.session_state.rag_system.add_document(file_name, content)
-                st.session_state.processed_docs.add(file_name)
-                st.success(f"✅ Processed: {file_name}")
-            else:
-                st.warning(f"⚠️ No content extracted from: {file_name}")
-        
-        except Exception as e:
-            st.error(f"❌ Error processing {os.path.basename(file_path)}: {str(e)}")
-        
-        progress_bar.progress((i + 1) / len(file_paths))
-
-def process_uploaded_files(uploaded_files):
-    """Process uploaded files"""
-    processor = DocumentProcessor()
-    progress_bar = st.progress(0)
-    
-    for i, uploaded_file in enumerate(uploaded_files):
-        try:
-            # Save uploaded file temporarily
-            with tempfile.NamedTemporaryFile(delete=False, suffix=f".{uploaded_file.name.split('.')[-1]}") as tmp_file:
-                tmp_file.write(uploaded_file.getvalue())
-                tmp_path = tmp_file.name
+            # Overall stats
+            total_words = sum(info['word_count'] for info in file_info)
+            total_size = sum(info['size'] for info in file_info)
             
-            # Process based on file type
-            if uploaded_file.name.lower().endswith('.pdf'):
-                content = processor.extract_text_from_pdf(tmp_path)
-            elif uploaded_file.name.lower().endswith(('.docx', '.doc')):
-                content = processor.extract_text_from_docx(tmp_path)
-            elif uploaded_file.name.lower().endswith(('.txt', '.md')):
-                content = processor.extract_text_from_txt(tmp_path)
-            else:
-                continue
-            
-            if content.strip():
-                st.session_state.rag_system.add_document(uploaded_file.name, content)
-                st.session_state.processed_docs.add(uploaded_file.name)
-                st.success(f"✅ Processed: {uploaded_file.name}")
-            else:
-                st.warning(f"⚠️ No content extracted from: {uploaded_file.name}")
-            
-            # Clean up temporary file
-            os.unlink(tmp_path)
-        
-        except Exception as e:
-            st.error(f"❌ Error processing {uploaded_file.name}: {str(e)}")
-        
-        progress_bar.progress((i + 1) / len(uploaded_files))
+            st.markdown(f"""
+            <div class="stats-container">
+                <h4>📈 Total Statistics</h4>
+                <p><strong>Files:</strong> {len(file_info)}</p>
+                <p><strong>Total Words:</strong> {total_words:,}</p>
+                <p><strong>Total Size:</strong> {total_size:,} bytes</p>
+            </div>
+            """, unsafe_allow_html=True)
 
 if __name__ == "__main__":
     main()
